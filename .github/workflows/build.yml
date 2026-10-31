@@ -1,0 +1,32 @@
+name: build
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that the source files are there
+        run: |
+          ls -R src
+          test -f src/main/java/dev/tpc/MixScreen.java
+          test -f src/main/resources/fabric.mod.json
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 9.8.2
+      - name: Build for Minecraft 26.2
+        run: gradle build --no-daemon
+      - name: Check the jar is not empty
+        run: |
+          unzip -l build/libs/*.jar
+          unzip -l build/libs/*.jar | grep -q "dev/tpc/MixScreen.class"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: texturepack-client-26.2
+          path: build/libs/*.jar
