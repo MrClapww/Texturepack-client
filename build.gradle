@@ -1,0 +1,24 @@
+// Minecraft 26.x is unobfuscated: no mappings, plain 'implementation', Java 25.
+plugins { id 'net.fabricmc.fabric-loom' version "${loom_version}" }
+
+version = "${mod_version}+mc${minecraft_version}"
+base { archivesName = 'texturepack-client' }
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+}
+
+processResources {
+    def v = project.version
+    inputs.property "version", v
+    filesMatching("fabric.mod.json") { expand "version": v }
+}
+
+tasks.withType(JavaCompile).configureEach { it.options.release = 25 }
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+}

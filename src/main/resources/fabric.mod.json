@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "id": "tpc",
+  "version": "${version}",
+  "name": "Texturepack Client",
+  "description": "Mix textures from all your resource packs, block by block. Open with Right Shift.",
+  "environment": "client",
+  "entrypoints": { "client": ["dev.tpc.TexturePackClient"] },
+  "depends": { "fabricloader": ">=0.20.1", "minecraft": "~26.2", "java": ">=25", "fabric-api": "*" }
+}
