@@ -22,31 +22,36 @@ import java.util.function.Predicate;
  * Minecraft 26.x menu.
  * Left: a short fixed list (Armor, Sword, Crystal, ... Sky, GUI) - only entries you have textures for.
  * Middle: the styles (resource packs) for the chosen entry. Right: big preview + overview of everything in that style.
+ * The end crystal and block entries are built as real spinning 3D models from the pack textures.
  */
 public class MixScreen extends Screen {
     record Img(Identifier id, int w, int h) {}
 
     // ---------- the fixed list ----------
-    record Cat(String name, Predicate<String> match, int max, List<String> samples, List<String> top, List<String> side) {}
+    record Cat(String name, Predicate<String> match, int max, List<String> samples, List<String> top, List<String> side, List<String> single) {}
 
     private static String nm(String p) { return p.substring(p.lastIndexOf('/') + 1, p.length() - 4); }
     private static boolean item(String p) { return p.startsWith("item/"); }
 
     private static Cat cat(String name, Predicate<String> m, int max, String... samples) {
-        return new Cat(name, m, max, List.of(samples), null, null);
+        return new Cat(name, m, max, List.of(samples), null, null, null);
     }
     private static Cat cube(String name, Predicate<String> m, List<String> top, List<String> side) {
-        return new Cat(name, m, 1, top, top, side);
+        return new Cat(name, m, 1, top, top, side, null);
+    }
+    private static Cat withSingle(Cat c, String... single) {
+        return new Cat(c.name(), c.match(), c.max(), c.samples(), c.top(), c.side(), List.of(single));
     }
 
     static final List<Cat> CATS = List.of(
-            cat("Armor", p -> {
+            withSingle(cat("Armor", p -> {
                 String n = nm(p);
                 return p.startsWith("models/armor/") || p.startsWith("entity/equipment/humanoid")
                         || (item(p) && (n.contains("helmet") || n.contains("chestplate") || n.contains("leggings") || n.contains("boots")));
             }, 4, "netherite_helmet", "netherite_chestplate", "netherite_leggings", "netherite_boots",
                     "diamond_helmet", "diamond_chestplate", "diamond_leggings", "diamond_boots",
                     "iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots"),
+                    "netherite_chestplate", "diamond_chestplate", "iron_chestplate", "golden_chestplate", "chainmail_chestplate", "leather_chestplate"),
             cat("Sword", p -> item(p) && nm(p).endsWith("_sword"), 1, "netherite_sword", "diamond_sword", "iron_sword", "golden_sword", "stone_sword", "wooden_sword"),
             cat("Pickaxe", p -> item(p) && nm(p).endsWith("_pickaxe"), 1, "netherite_pickaxe", "diamond_pickaxe", "iron_pickaxe", "golden_pickaxe", "stone_pickaxe", "wooden_pickaxe"),
             cat("Axe", p -> item(p) && nm(p).endsWith("_axe"), 1, "netherite_axe", "diamond_axe", "iron_axe", "golden_axe", "stone_axe", "wooden_axe"),
@@ -97,6 +102,8 @@ public class MixScreen extends Screen {
             });
         }
 
+        Source exact(String pack, String path) { return faces(pack).get(path); }
+
         private static Source find(Map<String, Source> f, String name) {
             Source any = null;
             for (var e : f.entrySet()) {
@@ -120,11 +127,15 @@ public class MixScreen extends Screen {
         List<Source> samples(String pack, int max) {
             return sampleCache.computeIfAbsent(pack + "|" + max, k -> {
                 Map<String, Source> f = faces(pack);
+                List<String> names = (max == 1 && def.single() != null) ? def.single() : def.samples();
                 List<Source> out = new ArrayList<>();
-                for (String n : def.samples()) {
+                for (String n : names) {
                     if (out.size() >= max) break;
                     Source s = find(f, n);
                     if (s != null && !out.contains(s)) out.add(s);
+                }
+                if (out.isEmpty() && max == 1 && def.single() != null) {
+                    for (String n : def.samples()) { Source s = find(f, n); if (s != null) { out.add(s); break; } }
                 }
                 if (out.isEmpty() && !f.isEmpty()) out.add(f.values().iterator().next());
                 return out;
@@ -137,10 +148,13 @@ public class MixScreen extends Screen {
         }
     }
 
+    // ---------- look ----------
+    private static final int C_BG = 0xFF0A0C0F, C_PANEL = 0xFF12161B, C_PANEL2 = 0xFF1A2027, C_LINE = 0xFF2B343E,
+            C_ACCENT = 0xFF21D4FD, C_TEXT = 0xFFECEFF4, C_DIM = 0xFF8A94A0, C_OK = 0xFF3DDC84;
+
     // ---------- layout constants ----------
-    private static final int L = 12, T = 30, LEFT_W = 150, RIGHT_W = 190, ROW = 24;
-    private static final int CELL = 80, GAP = 8, LABEL = 16, N = 16, TH = 26, TG = 4, PREVIEW = 88;
-    private static final int BG = 0xFF0C0A14;
+    private static final int L = 14, T = 36, LEFT_W = 150, RIGHT_W = 190, ROW = 24;
+    private static final int CELL = 84, GAP = 8, LABEL = 16, N = 16, TH = 26, TG = 4, PREVIEW = 96;
 
     private final Minecraft mc = Minecraft.getInstance();
     private final CompletableFuture<Map<String, List<Source>>> scan = CompletableFuture
@@ -184,11 +198,11 @@ public class MixScreen extends Screen {
     }
 
     // ---------- layout ----------
-    private int cx0() { return L + LEFT_W + 10; }
-    private int cx1() { return width - L - RIGHT_W - 10; }
+    private int cx0() { return L + LEFT_W + 14; }
+    private int cx1() { return width - L - RIGHT_W - 14; }
     private int bottom() { return height - 40; }
     private int cols() { return Math.max(1, (cx1() - cx0() + GAP) / (CELL + GAP)); }
-    private int ovTop() { return T + PREVIEW + 40; }
+    private int ovTop() { return T + 6 + PREVIEW + 40; }
     private int perRow() { return Math.max(1, (RIGHT_W + TG) / (TH + TG)); }
 
     private int maxLeft() { return Math.max(0, data.size() * ROW - (bottom() - T)); }
@@ -232,7 +246,7 @@ public class MixScreen extends Screen {
         return idx >= 0 && idx < count ? idx : -1;
     }
 
-    // ---------- helpers ----------
+    // ---------- small drawing helpers ----------
     private String fit(String s, int maxW) {
         if (font.width(s) <= maxW) return s;
         int n = s.length();
@@ -264,37 +278,132 @@ public class MixScreen extends Screen {
         g.fill(x + w - 1, y, x + w, y + h, col);
     }
 
+    /** Only the four corners of a rectangle (the "tech" frame). */
+    private static void brackets(GuiGraphicsExtractor g, int x, int y, int w, int h, int len, int col) {
+        g.fill(x, y, x + len, y + 1, col);         g.fill(x, y, x + 1, y + len, col);
+        g.fill(x + w - len, y, x + w, y + 1, col); g.fill(x + w - 1, y, x + w, y + len, col);
+        g.fill(x, y + h - 1, x + len, y + h, col); g.fill(x, y + h - len, x + 1, y + h, col);
+        g.fill(x + w - len, y + h - 1, x + w, y + h, col); g.fill(x + w - 1, y + h - len, x + w, y + h, col);
+    }
+
     private void flatImg(GuiGraphicsExtractor g, Img i, int cx, int cy, int size) {
         if (i == null || i.id() == null) return;
         int rh = Math.min(i.w(), i.h()); // first frame only for animated strips
         g.blit(RenderPipelines.GUI_TEXTURED, i.id(), cx - size / 2, cy - size / 2, 0f, 0f, size, size, i.w(), rh, i.w(), i.h());
     }
 
-    /** Draws a texture as a parallelogram: (ox,oy) = top-left corner, (ux,uy) = right edge, (vx,vy) = down edge. */
-    private void face(GuiGraphicsExtractor g, Img img, float ox, float oy, float ux, float uy, float vx, float vy, int shade) {
-        if (img == null || img.id() == null) return;
+    // ---------- small 3D engine: boxes made of textured quads, spinning, painter's algorithm ----------
+    /** One textured face: origin o, edge vectors u (texture right) and v (texture down), normal (nx,nz). */
+    record Face(Img img, double ox, double oy, double oz, double ux, double uy, double uz, double vx, double vy, double vz,
+                double nx, double nz, float[] reg, double theta, double bob, boolean top) {}
+
+    private static final double TILT = Math.toRadians(25), CT = Math.cos(TILT), ST = Math.sin(TILT), YAW = 0.6;
+
+    private static double[] proj(double x, double y, double z, double c, double s) {
+        double x1 = x * c + z * s, z1 = -x * s + z * c;
+        return new double[]{x1, -y * CT + z1 * ST, z1 * CT + y * ST};
+    }
+
+    /** Box with Minecraft's entity texture layout (texOffs tu,tv; uv size uw x uh x ud) and its own geometry size. */
+    private static void box(List<Face> out, Img img, double cx, double cy, double cz, double gw, double gh, double gd,
+                            double tu, double tv, double uw, double uh, double ud, double s, double theta, double bob) {
+        double hw = gw / 2, hh = gh / 2, hd = gd / 2;
+        float[][] r = {
+                {(float) ((tu + ud) * s), (float) (tv * s), (float) (uw * s), (float) (ud * s)},
+                {(float) ((tu + ud) * s), (float) ((tv + ud) * s), (float) (uw * s), (float) (uh * s)},
+                {(float) ((tu + ud + uw) * s), (float) ((tv + ud) * s), (float) (ud * s), (float) (uh * s)},
+                {(float) ((tu + ud + uw + ud) * s), (float) ((tv + ud) * s), (float) (uw * s), (float) (uh * s)},
+                {(float) (tu * s), (float) ((tv + ud) * s), (float) (ud * s), (float) (uh * s)}};
+        addFaces(out, img, img, cx, cy, cz, hw, hh, hd, r, r, theta, bob);
+    }
+
+    private static void addFaces(List<Face> out, Img topImg, Img sideImg, double cx, double cy, double cz,
+                                 double hw, double hh, double hd, float[][] rTop, float[][] rSide, double theta, double bob) {
+        out.add(new Face(topImg, cx - hw, cy + hh, cz - hd, 2 * hw, 0, 0, 0, 0, 2 * hd, 0, 0, rTop[0], theta, bob, true));
+        out.add(new Face(sideImg, cx - hw, cy + hh, cz + hd, 2 * hw, 0, 0, 0, -2 * hh, 0, 0, 1, rSide[1], theta, bob, false));
+        out.add(new Face(sideImg, cx + hw, cy + hh, cz + hd, 0, 0, -2 * hd, 0, -2 * hh, 0, 1, 0, rSide[2], theta, bob, false));
+        out.add(new Face(sideImg, cx + hw, cy + hh, cz - hd, -2 * hw, 0, 0, 0, -2 * hh, 0, 0, -1, rSide[3], theta, bob, false));
+        out.add(new Face(sideImg, cx - hw, cy + hh, cz - hd, 0, 0, 2 * hd, 0, -2 * hh, 0, -1, 0, rSide[4], theta, bob, false));
+    }
+
+    private static float[] whole(Img i) { return new float[]{0, 0, i.w(), Math.min(i.w(), i.h())}; }
+
+    /** Draws all visible faces back to front. (cx,cy) = screen centre, k = pixels per model unit. */
+    private void model(GuiGraphicsExtractor g, List<Face> faces, float cx, float cy, float k, double midY) {
+        record Pr(Face f, double ux, double uy, double vx, double vy, double ox, double oy, double depth, int shade) {}
+        double sy0 = -midY * CT;
+        List<Pr> list = new ArrayList<>();
+        for (Face f : faces) {
+            if (f.img() == null || f.img().id() == null) continue;
+            double c = Math.cos(f.theta() + YAW), s = Math.sin(f.theta() + YAW);
+            double[] p0 = proj(f.ox(), f.oy() + f.bob(), f.oz(), c, s);
+            double[] p1 = proj(f.ox() + f.ux(), f.oy() + f.uy() + f.bob(), f.oz() + f.uz(), c, s);
+            double[] p2 = proj(f.ox() + f.vx(), f.oy() + f.vy() + f.bob(), f.oz() + f.vz(), c, s);
+            double ux = p1[0] - p0[0], uy = p1[1] - p0[1], vx = p2[0] - p0[0], vy = p2[1] - p0[1];
+            if (ux * vy - uy * vx <= 0.0001) continue; // faces away from the camera
+            double[] pc = proj(f.ox() + (f.ux() + f.vx()) / 2, f.oy() + (f.uy() + f.vy()) / 2 + f.bob(), f.oz() + (f.uz() + f.vz()) / 2, c, s);
+            int shade = 0;
+            if (!f.top()) {
+                double nxr = f.nx() * c + f.nz() * s, nzr = -f.nx() * s + f.nz() * c;
+                double light = Math.max(0, Math.min(1, ((-0.45 * nxr + 0.85 * nzr) + 1) / 2));
+                shade = ((int) ((1 - light) * 0x70)) << 24;
+            }
+            list.add(new Pr(f, ux, uy, vx, vy, p0[0], p0[1], pc[2], shade));
+        }
+        list.sort(Comparator.comparingDouble(Pr::depth));
         var pose = g.pose();
-        pose.pushMatrix();
-        pose.mul(new Matrix3x2f(ux / N, uy / N, vx / N, vy / N, ox, oy));
-        int rh = Math.min(img.w(), img.h());
-        g.blit(RenderPipelines.GUI_TEXTURED, img.id(), 0, 0, 0f, 0f, N, N, img.w(), rh, img.w(), img.h());
-        if (shade != 0) g.fill(0, 0, N, N, shade);
-        pose.popMatrix();
+        for (Pr p : list) {
+            Img im = p.f().img();
+            float[] r = p.f().reg();
+            pose.pushMatrix();
+            pose.mul(new Matrix3x2f((float) (p.ux() * k / N), (float) (p.uy() * k / N), (float) (p.vx() * k / N), (float) (p.vy() * k / N),
+                    (float) (cx + p.ox() * k), (float) (cy + (p.oy() - sy0) * k)));
+            g.blit(RenderPipelines.GUI_TEXTURED, im.id(), 0, 0, r[0], r[1], N, N,
+                    Math.max(1, Math.round(r[2])), Math.max(1, Math.round(r[3])), im.w(), im.h());
+            if (p.shade() != 0) g.fill(0, 0, N, N, p.shade());
+            pose.popMatrix();
+        }
     }
 
-    /** Isometric cube centred on (cx, cy); the whole thing is `size` pixels high. */
-    private void cube(GuiGraphicsExtractor g, Img top, Img side, float cx, float cy, float size) {
-        float e = size / 2f, w = 0.866f * e, t = 0.5f * e;
-        face(g, top, cx - w, cy - e / 2, w, -t, w, t, 0);
-        face(g, side, cx - w, cy - e / 2, w, t, 0, e, 0x30000000);
-        face(g, side, cx, cy, w, -t, 0, e, 0x60000000);
+    private static double spin(boolean animate) {
+        return animate ? (System.currentTimeMillis() % 1_000_000L) / 1000.0 * 0.9 : 0.5;
     }
 
-    /** The picture of one style: a 3D cube for blocks, 1 to 4 icons for everything else. */
-    private void style(GuiGraphicsExtractor g, CatData c, String pack, int cx, int cy, int size, boolean single) {
+    /** A cube made of one "top" and one "side" texture. */
+    private void cubeModel(GuiGraphicsExtractor g, Img top, Img side, int cx, int cy, int size, boolean animate) {
+        List<Face> f = new ArrayList<>();
+        addFaces(f, top, side, 0, 0, 0, 8, 8, 8, new float[][]{whole(top), whole(top), whole(top), whole(top), whole(top)},
+                new float[][]{whole(side), whole(side), whole(side), whole(side), whole(side)}, spin(animate), 0);
+        model(g, f, cx, cy, size / 24f, 0);
+    }
+
+    /** The end crystal as in the game: bedrock base, three nested spinning cubes, bobbing up and down. */
+    private void crystalModel(GuiGraphicsExtractor g, Img img, int cx, int cy, int size, boolean animate) {
+        double s = img.w() / 64.0, sp = spin(animate);
+        double bob = animate ? Math.sin(System.currentTimeMillis() % 1_000_000L / 1000.0 * 2.0) * 0.9 : 0;
+        List<Face> f = new ArrayList<>();
+        box(f, img, 0, -9, 0, 12, 4, 12, 0, 16, 12, 4, 12, s, 0, 0);                  // base
+        box(f, img, 0, 0, 0, 6.1, 6.1, 6.1, 32, 0, 8, 8, 8, s, sp + 1.6, bob);        // core
+        box(f, img, 0, 0, 0, 7, 7, 7, 0, 0, 8, 8, 8, s, sp + 0.8, bob);               // inner glass
+        box(f, img, 0, 0, 0, 8, 8, 8, 0, 0, 8, 8, 8, s, sp, bob);                     // outer glass
+        model(g, f, cx, cy, size / 22f, -3.5);
+    }
+
+    /** The picture of one style: 3D for the crystal and the blocks, 1 to 4 icons for everything else. */
+    private void style(GuiGraphicsExtractor g, CatData c, String pack, int cx, int cy, int size, boolean single, boolean animate) {
+        if (c.def.name().equals("Crystal")) {
+            Source ent = c.exact(pack, "entity/end_crystal/end_crystal.png");
+            if (ent != null) {
+                Img e = img(ent);
+                if (e != null && e.id() != null) crystalModel(g, e, cx, cy, size, animate);
+                if (e != null && e.id() != null || e == null) return;
+            }
+        }
         if (c.def.top() != null) {
             Img t = img(c.cubeTop(pack)), s = img(c.cubeSide(pack));
-            if (t != null || s != null) { cube(g, t != null ? t : s, s != null ? s : t, cx, cy, size); return; }
+            if (t != null && t.id() == null) t = null;
+            if (s != null && s.id() == null) s = null;
+            if (t != null || s != null) { cubeModel(g, t != null ? t : s, s != null ? s : t, cx, cy, size, animate && !single); return; }
         }
         List<Source> sm = c.samples(pack, single ? 1 : c.def.max());
         int n = sm.size();
@@ -322,15 +431,21 @@ public class MixScreen extends Screen {
     @Override
     public void extractRenderState(GuiGraphicsExtractor g, int mx, int my, float delta) {
         mouseX = mx; mouseY = my; loadBudget = 10;
-        g.fill(0, 0, width, height, 0xEE0C0A14);
+        g.fill(0, 0, width, height, C_BG);
         pollKeys();
         if (index == null) {
-            g.text(font, "TEXTUREPACK CLIENT", L, 10, 0xFFB58CFF, false);
-            if (!scan.isDone()) { g.text(font, "Scanning resource packs...", L, T + 4, 0xFFAAAAAA, false); return; }
+            title(g);
+            if (!scan.isDone()) { g.text(font, "Scanning resource packs...", L, T + 8, C_DIM, false); return; }
             finishScan();
         }
         leftScroll = Math.max(0, Math.min(maxLeft(), leftScroll));
         scroll = Math.max(0, Math.min(maxCenter(), scroll));
+        int rx = width - L - RIGHT_W;
+
+        // panels
+        g.fill(L - 4, T, L + LEFT_W + 4, bottom(), C_PANEL);
+        g.fill(cx0() - 6, T, cx1() + 6, bottom(), C_PANEL);
+        g.fill(rx - 6, T, rx + RIGHT_W + 6, bottom(), C_PANEL);
 
         // ----- left: the short fixed list -----
         int hoverRow = rowAt(mx, my);
@@ -339,12 +454,14 @@ public class MixScreen extends Screen {
             if (y + ROW < T || y > bottom()) continue;
             CatData c = data.get(i);
             boolean active = c == cur;
-            if (active) g.fill(L, y, L + LEFT_W, y + ROW - 2, 0x883A2A66);
-            else if (i == hoverRow) g.fill(L, y, L + LEFT_W, y + ROW - 2, 0x44302850);
-            style(g, c, previewPack(c), L + 13, y + 11, 18, true);
-            g.text(font, c.def.name(), L + 28, y + 7, active ? 0xFFFFFFFF : 0xFFBBBBBB, false);
+            if (active || i == hoverRow) g.fill(L, y, L + LEFT_W, y + ROW - 2, active ? C_PANEL2 : 0xFF161B21);
+            if (active) g.fill(L, y, L + 2, y + ROW - 2, C_ACCENT);
+            style(g, c, previewPack(c), L + 15, y + 11, 18, true, false);
+            g.text(font, c.def.name(), L + 30, y + 7, active ? C_TEXT : 0xFFB4BCC6, false);
             String n = String.valueOf(c.packs().size());
-            g.text(font, n, L + LEFT_W - 6 - font.width(n), y + 7, selPack.containsKey(c.def.name()) ? 0xFF55FF55 : 0xFFB58CFF, false);
+            boolean has = selPack.containsKey(c.def.name());
+            g.text(font, n, L + LEFT_W - 8 - font.width(n), y + 7, has ? C_OK : C_DIM, false);
+            if (has) g.fill(L + LEFT_W - 4, y + 4, L + LEFT_W - 2, y + ROW - 6, C_OK);
         }
 
         // ----- middle: the styles for the chosen entry -----
@@ -354,20 +471,22 @@ public class MixScreen extends Screen {
             List<String> packs = cur.packs();
             for (int idx = 0; idx < packs.size(); idx++) {
                 int x = cx0() + (idx % cols) * (CELL + GAP);
-                int yy = T + (idx / cols) * (CELL + LABEL + GAP) - (int) scroll;
+                int yy = T + 4 + (idx / cols) * (CELL + LABEL + GAP) - (int) scroll;
                 if (yy + CELL + LABEL < T || yy > bottom()) continue;
                 String pack = packs.get(idx);
                 boolean active = pack.equals(selPack.get(cur.def.name()));
-                g.fill(x, yy, x + CELL, yy + CELL, 0xFF1A1730);
-                style(g, cur, pack, x + CELL / 2, yy + CELL / 2, CELL - 14, false);
-                border(g, x, yy, CELL, CELL, active ? 0xFF55FF55 : (idx == hoverCell ? 0xFFB58CFF : 0xFF2E2950));
+                boolean hov = idx == hoverCell;
+                g.fill(x, yy, x + CELL, yy + CELL, active ? 0xFF14261D : C_PANEL2);
+                style(g, cur, pack, x + CELL / 2, yy + CELL / 2, CELL - 18, false, hov || active);
+                border(g, x, yy, CELL, CELL, C_LINE);
+                brackets(g, x, yy, CELL, CELL, 8, active ? C_OK : (hov ? C_ACCENT : 0xFF45525F));
+                if (active) g.text(font, "ACTIVE", x + 5, yy + 5, C_OK, false);
                 String lab = pack.endsWith(".zip") ? pack.substring(0, pack.length() - 4) : pack;
-                g.text(font, fit(lab, CELL), x, yy + CELL + 3, active ? 0xFF55FF55 : 0xFFDDDDDD, false);
+                g.text(font, fit(lab, CELL), x, yy + CELL + 4, active ? C_OK : C_TEXT, false);
             }
         }
 
         // ----- right: overview thumbnails first (the preview block below hides anything scrolled above it) -----
-        int rx = width - L - RIGHT_W;
         String shown = null;
         List<Source> ov = List.of();
         if (cur != null) {
@@ -379,46 +498,60 @@ public class MixScreen extends Screen {
                 int x = rx + (i % per) * (TH + TG);
                 int y = ovTop() + (i / per) * (TH + TG) - (int) ovScroll;
                 if (y + TH < ovTop() - 2 || y > bottom()) continue;
-                g.fill(x, y, x + TH, y + TH, 0xFF1A1730);
+                g.fill(x, y, x + TH, y + TH, C_PANEL2);
                 flatImg(g, img(ov.get(i)), x + TH / 2, y + TH / 2, TH - 4);
             }
         }
         int hoverOv = ovAt(mx, my, ov.size());
 
-        g.fill(rx, T, rx + RIGHT_W, ovTop(), BG);
-        g.fill(rx, T, rx + RIGHT_W, T + PREVIEW, 0xFF1A1730);
+        g.fill(rx - 6, T, rx + RIGHT_W + 6, ovTop(), C_PANEL);
+        g.fill(rx, T + 6, rx + RIGHT_W, T + 6 + PREVIEW, C_PANEL2);
+        brackets(g, rx, T + 6, RIGHT_W, PREVIEW, 10, C_ACCENT);
         if (cur != null && shown != null) {
-            style(g, cur, shown, rx + RIGHT_W / 2, T + PREVIEW / 2, PREVIEW - 16, false);
+            style(g, cur, shown, rx + RIGHT_W / 2, T + 6 + PREVIEW / 2, PREVIEW - 22, false, true);
             boolean act = shown.equals(selPack.get(cur.def.name()));
             String lab = shown.endsWith(".zip") ? shown.substring(0, shown.length() - 4) : shown;
-            g.text(font, fit(cur.def.name() + " - " + lab, RIGHT_W), rx, T + PREVIEW + 6, 0xFFFFFFFF, false);
-            g.text(font, act ? "SELECTED" : "not selected", rx, T + PREVIEW + 18, act ? 0xFF55FF55 : 0xFF777777, false);
+            g.text(font, fit(cur.def.name() + " - " + lab, RIGHT_W), rx, T + PREVIEW + 14, C_TEXT, false);
+            g.text(font, act ? "SELECTED" : "not selected", rx, T + PREVIEW + 26, act ? C_OK : C_DIM, false);
             String ovLabel = hoverOv >= 0 ? ov.get(hoverOv).tex().replace(".png", "") : "OVERVIEW (" + ov.size() + ")";
-            g.text(font, fit(ovLabel, RIGHT_W), rx, ovTop() - 12, hoverOv >= 0 ? 0xFFFFFFFF : 0xFFB58CFF, false);
+            g.text(font, fit(ovLabel, RIGHT_W), rx, ovTop() - 12, hoverOv >= 0 ? C_TEXT : C_ACCENT, false);
         }
 
-        // ----- hide what scrolled out at the top/bottom, then header and footer -----
-        g.fill(0, 0, width, T, BG);
-        g.fill(0, bottom(), width, height, BG);
-        g.text(font, "TEXTUREPACK CLIENT", L, 10, 0xFFB58CFF, false);
+        // ----- hide what scrolled out at the top/bottom, then frames, header and footer -----
+        g.fill(0, 0, width, T, C_BG);
+        g.fill(0, bottom(), width, height, C_BG);
+        border(g, L - 4, T, LEFT_W + 8, bottom() - T, C_LINE);
+        border(g, cx0() - 6, T, cx1() - cx0() + 12, bottom() - T, C_LINE);
+        border(g, rx - 6, T, RIGHT_W + 12, bottom() - T, C_LINE);
+        title(g);
         if (cur != null)
-            g.text(font, cur.def.name() + "  -  " + cur.packs().size() + (cur.packs().size() == 1 ? " style" : " styles"),
-                    cx0(), 10, 0xFFFFFFFF, false);
+            g.text(font, cur.def.name().toUpperCase(Locale.ROOT) + "   " + cur.packs().size() + (cur.packs().size() == 1 ? " STYLE" : " STYLES"),
+                    cx0(), 14, C_TEXT, false);
         else
-            g.text(font, "No matching textures found. Put packs in .minecraft/resourcepacks", cx0(), 10, 0xFF777777, false);
+            g.text(font, "No matching textures found. Put packs in .minecraft/resourcepacks", cx0(), 14, C_DIM, false);
 
         int by = height - 30;
-        button(g, L, by, 80, applying ? "..." : "APPLY", mx, my, dirty ? 0xFF3C8D3C : 0xFF2E2950);
-        button(g, L + 88, by, 80, "RESET", mx, my, 0xFF2E2950);
-        g.text(font, status.isEmpty() ? "CLICK A STYLE, THEN APPLY / RIGHT SHIFT CLOSES" : status, L + 180, by + 5, 0xFF999999, false);
-        String cnt = selPack.size() + " selected";
-        g.text(font, cnt, width - L - font.width(cnt), by + 5, 0xFF999999, false);
+        g.fill(0, bottom() + 2, width, bottom() + 3, C_LINE);
+        button(g, L, by, 80, applying ? "..." : "APPLY", mx, my, dirty);
+        button(g, L + 88, by, 80, "RESET", mx, my, false);
+        g.text(font, status.isEmpty() ? "CLICK A STYLE, THEN APPLY  -  RIGHT SHIFT CLOSES" : status, L + 182, by + 5, C_DIM, false);
+        String cnt = selPack.size() + " SELECTED";
+        g.text(font, cnt, width - L - font.width(cnt), by + 5, C_DIM, false);
     }
 
-    private void button(GuiGraphicsExtractor g, int x, int y, int w, String label, int mx, int my, int color) {
+    private void title(GuiGraphicsExtractor g) {
+        g.fill(L, 10, L + 3, 24, C_ACCENT);
+        g.text(font, "TEXTUREPACK", L + 8, 12, C_TEXT, false);
+        g.text(font, "CLIENT", L + 8 + font.width("TEXTUREPACK "), 12, C_ACCENT, false);
+        g.fill(0, T - 3, width, T - 2, C_LINE);
+        g.fill(L, T - 3, L + 96, T - 2, C_ACCENT);
+    }
+
+    private void button(GuiGraphicsExtractor g, int x, int y, int w, String label, int mx, int my, boolean primary) {
         boolean h = in(mx, my, x, y, w, 18);
-        g.fill(x, y, x + w, y + 18, h ? color + 0x00202020 : color);
-        g.text(font, label, x + (w - font.width(label)) / 2, y + 5, 0xFFFFFFFF, false);
+        g.fill(x, y, x + w, y + 18, primary ? C_ACCENT : (h ? 0xFF232B33 : C_PANEL2));
+        g.fill(x, y + 16, x + w, y + 18, primary ? 0xFF0E8FB0 : C_ACCENT);
+        g.text(font, label, x + (w - font.width(label)) / 2, y + 4, primary ? 0xFF00141C : C_TEXT, false);
     }
 
     private boolean in(double mx, double my, int x, int y, int w, int h) { return mx >= x && mx <= x + w && my >= y && my <= y + h; }
