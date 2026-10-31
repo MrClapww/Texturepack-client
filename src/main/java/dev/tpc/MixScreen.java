@@ -5,7 +5,6 @@ import dev.tpc.PackScanner.Source;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.texture.DynamicTexture;
@@ -17,31 +16,67 @@ import org.lwjgl.glfw.GLFW;
 import java.io.ByteArrayInputStream;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Predicate;
 
 /**
- * Minecraft 26.x menu: left = every block/item you have a texture for, centre = the styles (packs) for it,
- * blocks are drawn as small 3D cubes. Tabs on top: PVP, CPVP, BLOCKS, ITEMS, OTHER, ALL.
+ * Minecraft 26.x menu.
+ * Left: a short fixed list (Armor, Sword, Crystal, ... Sky, GUI) - only entries you have textures for.
+ * Middle: the styles (resource packs) for the chosen entry. Right: big preview + overview of everything in that style.
  */
 public class MixScreen extends Screen {
     record Img(Identifier id, int w, int h) {}
 
-    // ---------- one block / item and all the packs that have a texture for it ----------
-    static final String[][] ROLES = {
-            {"_top", "_end", "", "_side", "_front"},   // 0 top face
-            {"_front", "_side", "", "_top"},           // 1 left face
-            {"_side", "", "_front", "_top"}};          // 2 right face
+    // ---------- the fixed list ----------
+    record Cat(String name, Predicate<String> match, int max, List<String> samples, List<String> top, List<String> side) {}
 
-    static final class Entry {
-        final String key, label;
-        final int kind; // 0 = block, 1 = item, 2 = other
+    private static String nm(String p) { return p.substring(p.lastIndexOf('/') + 1, p.length() - 4); }
+    private static boolean item(String p) { return p.startsWith("item/"); }
+
+    private static Cat cat(String name, Predicate<String> m, int max, String... samples) {
+        return new Cat(name, m, max, List.of(samples), null, null);
+    }
+    private static Cat cube(String name, Predicate<String> m, List<String> top, List<String> side) {
+        return new Cat(name, m, 1, top, top, side);
+    }
+
+    static final List<Cat> CATS = List.of(
+            cat("Armor", p -> {
+                String n = nm(p);
+                return p.startsWith("models/armor/") || p.startsWith("entity/equipment/humanoid")
+                        || (item(p) && (n.contains("helmet") || n.contains("chestplate") || n.contains("leggings") || n.contains("boots")));
+            }, 4, "netherite_helmet", "netherite_chestplate", "netherite_leggings", "netherite_boots",
+                    "diamond_helmet", "diamond_chestplate", "diamond_leggings", "diamond_boots",
+                    "iron_helmet", "iron_chestplate", "iron_leggings", "iron_boots"),
+            cat("Sword", p -> item(p) && nm(p).endsWith("_sword"), 1, "netherite_sword", "diamond_sword", "iron_sword", "golden_sword", "stone_sword", "wooden_sword"),
+            cat("Pickaxe", p -> item(p) && nm(p).endsWith("_pickaxe"), 1, "netherite_pickaxe", "diamond_pickaxe", "iron_pickaxe", "golden_pickaxe", "stone_pickaxe", "wooden_pickaxe"),
+            cat("Axe", p -> item(p) && nm(p).endsWith("_axe"), 1, "netherite_axe", "diamond_axe", "iron_axe", "golden_axe", "stone_axe", "wooden_axe"),
+            cat("Crossbow", p -> item(p) && nm(p).startsWith("crossbow"), 1, "crossbow_standby", "crossbow_pulling_0", "crossbow_arrow", "crossbow_firework"),
+            cat("Cobweb", p -> p.equals("block/cobweb.png") || p.equals("item/cobweb.png"), 1, "cobweb"),
+            cat("Crystal", p -> p.startsWith("entity/end_crystal/") || p.equals("item/end_crystal.png"), 1, "end_crystal"),
+            cube("Obsidian", p -> p.equals("block/obsidian.png") || p.equals("block/crying_obsidian.png"), List.of("obsidian", "crying_obsidian"), List.of("obsidian", "crying_obsidian")),
+            cube("Anchor", p -> p.startsWith("block/respawn_anchor"), List.of("respawn_anchor_top", "respawn_anchor_top_off"), List.of("respawn_anchor_side4", "respawn_anchor_side0")),
+            cube("Glowstone", p -> p.equals("block/glowstone.png"), List.of("glowstone"), List.of("glowstone")),
+            cat("XP Bottle", p -> p.equals("item/experience_bottle.png"), 1, "experience_bottle"),
+            cat("Ender Pearl", p -> p.equals("item/ender_pearl.png"), 1, "ender_pearl"),
+            cat("Golden Apple", p -> p.equals("item/golden_apple.png") || p.equals("item/enchanted_golden_apple.png"), 2, "golden_apple", "enchanted_golden_apple"),
+            cat("Elytra", p -> nm(p).contains("elytra"), 1, "elytra", "broken_elytra"),
+            cat("Totem", p -> nm(p).contains("totem"), 1, "totem_of_undying"),
+            cat("Mace", p -> p.equals("item/mace.png"), 1, "mace"),
+            cat("Wind Charge", p -> nm(p).contains("wind_charge"), 1, "wind_charge"),
+            cat("Trident", p -> nm(p).startsWith("trident"), 1, "trident", "trident_in_hand"),
+            cat("Sky", p -> p.startsWith("environment/"), 2, "sun", "full_moon", "moon_phases", "clouds"),
+            cat("GUI", p -> p.startsWith("gui/"), 2, "hotbar", "inventory", "widgets"));
+
+    /** One entry of the list, with all textures that belong to it and the packs that provide them. */
+    static final class CatData {
+        final Cat def;
         final Map<String, List<Source>> texes = new TreeMap<>();
         private List<String> packs;
+        private final Map<String, Map<String, Source>> faceCache = new HashMap<>();
+        private final Map<String, List<Source>> sampleCache = new HashMap<>();
+        private final Map<String, List<Source>> ovCache = new HashMap<>();
 
-        Entry(String key, int kind) {
-            this.key = key;
-            this.kind = kind;
-            this.label = key.substring(key.lastIndexOf('/') + 1);
-        }
+        CatData(Cat def) { this.def = def; }
 
         List<String> packs() {
             if (packs == null) {
@@ -53,61 +88,58 @@ public class MixScreen extends Screen {
             return packs;
         }
 
-        /** All textures of this entry that the given pack provides. */
         Map<String, Source> faces(String pack) {
-            Map<String, Source> m = new LinkedHashMap<>();
-            for (var e : texes.entrySet())
-                for (Source s : e.getValue()) if (s.pack().equals(pack)) { m.put(e.getKey(), s); break; }
-            return m;
+            return faceCache.computeIfAbsent(pack, k -> {
+                Map<String, Source> m = new LinkedHashMap<>();
+                for (var e : texes.entrySet())
+                    for (Source s : e.getValue()) if (s.pack().equals(k)) { m.put(e.getKey(), s); break; }
+                return m;
+            });
         }
 
-        Source role(String pack, int r) {
-            if (kind != 0) return null;
-            Map<String, Source> f = faces(pack);
-            String dir = key.substring(0, key.lastIndexOf('/') + 1);
-            for (String suf : ROLES[r]) {
-                Source s = f.get(dir + label + suf + ".png");
-                if (s != null) return s;
+        private static Source find(Map<String, Source> f, String name) {
+            Source any = null;
+            for (var e : f.entrySet()) {
+                if (!nm(e.getKey()).equals(name)) continue;
+                if (item(e.getKey()) || e.getKey().startsWith("block/")) return e.getValue();
+                if (any == null) any = e.getValue();
             }
+            return any;
+        }
+
+        private Source first(String pack, List<String> names) {
+            Map<String, Source> f = faces(pack);
+            for (String n : names) { Source s = find(f, n); if (s != null) return s; }
             return null;
         }
 
-        Source flat(String pack) {
-            Source s = role(pack, 2);
-            if (s == null) s = role(pack, 0);
-            if (s != null) return s;
-            Map<String, Source> f = faces(pack);
-            return f.isEmpty() ? null : f.values().iterator().next();
+        Source cubeTop(String pack) { return def.top() == null ? null : first(pack, def.top()); }
+        Source cubeSide(String pack) { return def.side() == null ? null : first(pack, def.side()); }
+
+        /** A few typical textures of this style, used as its picture. */
+        List<Source> samples(String pack, int max) {
+            return sampleCache.computeIfAbsent(pack + "|" + max, k -> {
+                Map<String, Source> f = faces(pack);
+                List<Source> out = new ArrayList<>();
+                for (String n : def.samples()) {
+                    if (out.size() >= max) break;
+                    Source s = find(f, n);
+                    if (s != null && !out.contains(s)) out.add(s);
+                }
+                if (out.isEmpty() && !f.isEmpty()) out.add(f.values().iterator().next());
+                return out;
+            });
+        }
+
+        /** Everything this style contains (for the overview). */
+        List<Source> overview(String pack) {
+            return ovCache.computeIfAbsent(pack, k -> new ArrayList<>(faces(k).values()));
         }
     }
 
-    // ---------- tabs ----------
-    private static final String[] TABS = {"PVP", "CPVP", "BLOCKS", "ITEMS", "OTHER", "ALL"};
-    private static final String[] PVP = {"sword", "_axe", "crossbow", "shield", "totem", "golden_apple", "potion",
-            "helmet", "chestplate", "leggings", "boots", "mace", "trident", "arrow", "wind_charge", "ender_pearl",
-            "experience_bottle"};
-    private static final String[] CPVP = {"crystal", "obsidian", "anchor", "glowstone", "ender_pearl", "totem",
-            "golden_apple", "experience_bottle", "netherite", "ender_chest", "fire", "cobweb"};
-
-    private static boolean has(String name, String[] words) {
-        for (String w : words) if (name.contains(w)) return true;
-        return false;
-    }
-
-    private static boolean inTab(Entry e, int tab) {
-        return switch (tab) {
-            case 0 -> has(e.label, PVP) || e.label.equals("bow") || e.label.startsWith("bow_");
-            case 1 -> has(e.label, CPVP);
-            case 2 -> e.kind == 0;
-            case 3 -> e.kind == 1;
-            case 4 -> e.kind == 2;
-            default -> true;
-        };
-    }
-
     // ---------- layout constants ----------
-    private static final int L = 12, T = 62, LEFT_W = 180, RIGHT_W = 130, ROW = 22;
-    private static final int CELL = 72, GAP = 8, LABEL = 16, N = 16;
+    private static final int L = 12, T = 30, LEFT_W = 150, RIGHT_W = 190, ROW = 24;
+    private static final int CELL = 80, GAP = 8, LABEL = 16, N = 16, TH = 26, TG = 4, PREVIEW = 88;
     private static final int BG = 0xFF0C0A14;
 
     private final Minecraft mc = Minecraft.getInstance();
@@ -115,63 +147,40 @@ public class MixScreen extends Screen {
             .supplyAsync(() -> PackScanner.scan(MixBuilder.packDir()))
             .exceptionally(e -> new TreeMap<>());
     private Map<String, List<Source>> index;
-    private final Map<String, Entry> entries = new TreeMap<>();
-    private final Map<String, Entry> texToEntry = new HashMap<>();
-    private final Map<String, String> selPack = new HashMap<>(); // entry key -> chosen pack
+    private final List<CatData> data = new ArrayList<>();   // only entries that have at least one texture
+    private final Map<String, String> selPack = new HashMap<>(); // entry name -> chosen pack
     private final Map<Source, Img> imgs = new HashMap<>();
-    private List<Entry> listed = List.of();
-    private Entry cur;
+    private CatData cur;
     private String inspectPack;
-    private int tab = 0, loadBudget, mouseX, mouseY;
-    private double leftScroll = 0, scroll = 0;
-    private boolean flat, dirty, applying, closing, shiftReleased, bsWasDown;
-    private String status = "", query = "";
-    private long bsSince, bsLast;
+    private int loadBudget, mouseX, mouseY;
+    private double leftScroll = 0, scroll = 0, ovScroll = 0;
+    private boolean dirty, applying, closing, shiftReleased;
+    private String status = "";
 
     public MixScreen() { super(Component.literal("Texturepack Client")); }
 
     // ---------- data ----------
-    private static String stripFace(String name) {
-        for (String s : new String[]{"_top", "_side", "_bottom", "_front", "_end", "_back"})
-            if (name.endsWith(s) && name.length() > s.length()) return name.substring(0, name.length() - s.length());
-        return name;
-    }
-
     private void finishScan() {
         index = scan.join();
-        for (var e : index.entrySet()) {
-            String tex = e.getKey();
-            String noExt = tex.substring(0, tex.length() - 4);
-            int slash = noExt.lastIndexOf('/');
-            String dir = noExt.substring(0, slash + 1), name = noExt.substring(slash + 1);
-            String key;
-            int kind;
-            if (dir.equals("block/")) { key = dir + stripFace(name); kind = 0; }
-            else if (dir.startsWith("item/")) { key = noExt; kind = 1; }
-            else { key = noExt; kind = 2; }
-            Entry en = entries.computeIfAbsent(key, k -> new Entry(k, kind));
-            en.texes.put(tex, e.getValue());
-            texToEntry.put(tex, en);
+        for (Cat def : CATS) {
+            CatData cd = new CatData(def);
+            for (var e : index.entrySet()) if (def.match().test(e.getKey())) cd.texes.put(e.getKey(), e.getValue());
+            if (!cd.texes.isEmpty()) data.add(cd);
         }
-        MixBuilder.loadSelection().forEach((tex, pack) -> {
-            Entry en = texToEntry.get(tex);
-            if (en != null && en.packs().contains(pack)) selPack.put(en.key, pack);
-        });
-        rebuildList();
+        // restore the last applied choice: the pack that supplies most of the saved textures of an entry
+        Map<String, String> saved = MixBuilder.loadSelection();
+        for (CatData cd : data) {
+            Map<String, Integer> votes = new HashMap<>();
+            saved.forEach((tex, pack) -> { if (cd.texes.containsKey(tex)) votes.merge(pack, 1, Integer::sum); });
+            votes.entrySet().stream().max(Map.Entry.comparingByValue())
+                    .ifPresent(b -> { if (cd.packs().contains(b.getKey())) selPack.put(cd.def.name(), b.getKey()); });
+        }
+        cur = data.isEmpty() ? null : data.get(0);
     }
 
-    private void rebuildList() {
-        String q = query.toLowerCase(Locale.ROOT);
-        List<Entry> l = new ArrayList<>();
-        for (Entry e : entries.values()) {
-            if (!inTab(e, tab)) continue;
-            if (!q.isEmpty() && !e.label.toLowerCase(Locale.ROOT).contains(q)) continue;
-            l.add(e);
-        }
-        listed = l;
-        leftScroll = 0;
-        scroll = 0;
-        if (cur == null || !l.contains(cur)) { cur = l.isEmpty() ? null : l.get(0); inspectPack = null; }
+    private String previewPack(CatData c) {
+        String p = selPack.get(c.def.name());
+        return p != null ? p : c.packs().get(0);
     }
 
     // ---------- layout ----------
@@ -179,8 +188,10 @@ public class MixScreen extends Screen {
     private int cx1() { return width - L - RIGHT_W - 10; }
     private int bottom() { return height - 40; }
     private int cols() { return Math.max(1, (cx1() - cx0() + GAP) / (CELL + GAP)); }
+    private int ovTop() { return T + PREVIEW + 40; }
+    private int perRow() { return Math.max(1, (RIGHT_W + TG) / (TH + TG)); }
 
-    private int maxLeft() { return Math.max(0, listed.size() * ROW - (bottom() - T)); }
+    private int maxLeft() { return Math.max(0, data.size() * ROW - (bottom() - T)); }
 
     private int maxCenter() {
         if (cur == null) return 0;
@@ -188,7 +199,17 @@ public class MixScreen extends Screen {
         return Math.max(0, rows * (CELL + LABEL + GAP) - (bottom() - T));
     }
 
-    /** Index of the style cell under the mouse, or -1. */
+    private int maxOv(int count) {
+        int rows = (count + perRow() - 1) / perRow();
+        return Math.max(0, rows * (TH + TG) - (bottom() - ovTop()));
+    }
+
+    private int rowAt(double mx, double my) {
+        if (mx < L || mx > L + LEFT_W || my < T || my > bottom()) return -1;
+        int i = (int) ((my - T + leftScroll) / ROW);
+        return i >= 0 && i < data.size() ? i : -1;
+    }
+
     private int cellAt(double mx, double my) {
         if (cur == null || mx < cx0() || mx > cx1() || my < T || my > bottom()) return -1;
         int col = (int) ((mx - cx0()) / (CELL + GAP));
@@ -201,10 +222,14 @@ public class MixScreen extends Screen {
         return idx >= 0 && idx < cur.packs().size() ? idx : -1;
     }
 
-    private int rowAt(double mx, double my) {
-        if (mx < L || mx > L + LEFT_W || my < T || my > bottom()) return -1;
-        int i = (int) ((my - T + leftScroll) / ROW);
-        return i >= 0 && i < listed.size() ? i : -1;
+    private int ovAt(double mx, double my, int count) {
+        int rx = width - L - RIGHT_W;
+        if (mx < rx || mx > rx + RIGHT_W || my < ovTop() || my > bottom()) return -1;
+        int col = (int) ((mx - rx) / (TH + TG));
+        int row = (int) ((my - ovTop() + ovScroll) / (TH + TG));
+        if (col >= perRow()) return -1;
+        int idx = row * perRow() + col;
+        return idx >= 0 && idx < count ? idx : -1;
     }
 
     // ---------- helpers ----------
@@ -239,46 +264,50 @@ public class MixScreen extends Screen {
         g.fill(x + w - 1, y, x + w, y + h, col);
     }
 
+    private void flatImg(GuiGraphicsExtractor g, Img i, int cx, int cy, int size) {
+        if (i == null || i.id() == null) return;
+        int rh = Math.min(i.w(), i.h()); // first frame only for animated strips
+        g.blit(RenderPipelines.GUI_TEXTURED, i.id(), cx - size / 2, cy - size / 2, 0f, 0f, size, size, i.w(), rh, i.w(), i.h());
+    }
+
     /** Draws a texture as a parallelogram: (ox,oy) = top-left corner, (ux,uy) = right edge, (vx,vy) = down edge. */
     private void face(GuiGraphicsExtractor g, Img img, float ox, float oy, float ux, float uy, float vx, float vy, int shade) {
         if (img == null || img.id() == null) return;
         var pose = g.pose();
         pose.pushMatrix();
         pose.mul(new Matrix3x2f(ux / N, uy / N, vx / N, vy / N, ox, oy));
-        int rh = Math.min(img.w(), img.h()); // first frame only for animated strips
+        int rh = Math.min(img.w(), img.h());
         g.blit(RenderPipelines.GUI_TEXTURED, img.id(), 0, 0, 0f, 0f, N, N, img.w(), rh, img.w(), img.h());
         if (shade != 0) g.fill(0, 0, N, N, shade);
         pose.popMatrix();
     }
 
     /** Isometric cube centred on (cx, cy); the whole thing is `size` pixels high. */
-    private void cube(GuiGraphicsExtractor g, Img top, Img left, Img right, float cx, float cy, float size) {
+    private void cube(GuiGraphicsExtractor g, Img top, Img side, float cx, float cy, float size) {
         float e = size / 2f, w = 0.866f * e, t = 0.5f * e;
-        face(g, top, cx - w, cy - e / 2, w, -t, w, t, 0);              // top
-        face(g, left, cx - w, cy - e / 2, w, t, 0, e, 0x30000000);     // left (a bit darker)
-        face(g, right, cx, cy, w, -t, 0, e, 0x60000000);               // right (darkest)
+        face(g, top, cx - w, cy - e / 2, w, -t, w, t, 0);
+        face(g, side, cx - w, cy - e / 2, w, t, 0, e, 0x30000000);
+        face(g, side, cx, cy, w, -t, 0, e, 0x60000000);
     }
 
-    /** Draws one style (= one pack) of an entry, as a cube for blocks or flat for everything else. */
-    private void variant(GuiGraphicsExtractor g, Entry e, String pack, int cx, int cy, int size) {
-        if (e.kind == 0 && !flat) {
-            Img t = img(e.role(pack, 0)), l = img(e.role(pack, 1)), r = img(e.role(pack, 2));
-            if (t == null && l == null && r == null) { flatImg(g, img(e.flat(pack)), cx, cy, size); return; }
-            cube(g, t != null ? t : r, l != null ? l : r, r != null ? r : l, cx, cy, size);
-        } else {
-            flatImg(g, img(e.flat(pack)), cx, cy, size);
+    /** The picture of one style: a 3D cube for blocks, 1 to 4 icons for everything else. */
+    private void style(GuiGraphicsExtractor g, CatData c, String pack, int cx, int cy, int size, boolean single) {
+        if (c.def.top() != null) {
+            Img t = img(c.cubeTop(pack)), s = img(c.cubeSide(pack));
+            if (t != null || s != null) { cube(g, t != null ? t : s, s != null ? s : t, cx, cy, size); return; }
         }
-    }
-
-    private void flatImg(GuiGraphicsExtractor g, Img i, int cx, int cy, int size) {
-        if (i == null || i.id() == null) return;
-        int rh = Math.min(i.w(), i.h());
-        g.blit(RenderPipelines.GUI_TEXTURED, i.id(), cx - size / 2, cy - size / 2, 0f, 0f, size, size, i.w(), rh, i.w(), i.h());
-    }
-
-    private String previewPack(Entry e) {
-        String p = selPack.get(e.key);
-        return p != null ? p : e.packs().get(0);
+        List<Source> sm = c.samples(pack, single ? 1 : c.def.max());
+        int n = sm.size();
+        if (n <= 1) { if (n == 1) flatImg(g, img(sm.get(0)), cx, cy, size); return; }
+        if (n == 2) {
+            int s = (int) (size * 0.6f), o = (int) (size * 0.28f);
+            flatImg(g, img(sm.get(0)), cx - o, cy, s);
+            flatImg(g, img(sm.get(1)), cx + o, cy, s);
+            return;
+        }
+        int s = (int) (size * 0.48f), o = (int) (size * 0.26f);
+        for (int i = 0; i < Math.min(4, n); i++)
+            flatImg(g, img(sm.get(i)), cx + (i % 2 == 0 ? -o : o), cy + (i < 2 ? -o : o), s);
     }
 
     // ---------- keys (polled) ----------
@@ -287,60 +316,38 @@ public class MixScreen extends Screen {
         boolean shift = GLFW.glfwGetKey(h, GLFW.GLFW_KEY_RIGHT_SHIFT) == GLFW.GLFW_PRESS;
         if (!shift) shiftReleased = true;
         else if (shiftReleased && !closing) { closing = true; mc.execute(this::onClose); }
-
-        boolean bs = GLFW.glfwGetKey(h, GLFW.GLFW_KEY_BACKSPACE) == GLFW.GLFW_PRESS;
-        long now = System.currentTimeMillis();
-        if (bs && index != null) {
-            if (!bsWasDown) { bsSince = now; bsLast = now; backspace(); }
-            else if (now - bsSince > 400 && now - bsLast > 45) { bsLast = now; backspace(); }
-        }
-        bsWasDown = bs;
-    }
-
-    private void backspace() {
-        if (!query.isEmpty()) { query = query.substring(0, query.length() - 1); rebuildList(); }
-    }
-
-    @Override
-    public boolean charTyped(CharacterEvent event) {
-        String s = event.codepointAsString();
-        if (index != null && !s.isEmpty() && !Character.isISOControl(s.charAt(0)) && query.length() < 32) {
-            query += s;
-            rebuildList();
-        }
-        return true;
     }
 
     // ---------- render ----------
     @Override
     public void extractRenderState(GuiGraphicsExtractor g, int mx, int my, float delta) {
-        mouseX = mx; mouseY = my; loadBudget = 8;
+        mouseX = mx; mouseY = my; loadBudget = 10;
         g.fill(0, 0, width, height, 0xEE0C0A14);
         pollKeys();
         if (index == null) {
-            g.text(font, "TEXTUREPACK CLIENT", L, 8, 0xFFB58CFF, false);
-            if (!scan.isDone()) { g.text(font, "Scanning resource packs...", L, T, 0xFFAAAAAA, false); return; }
+            g.text(font, "TEXTUREPACK CLIENT", L, 10, 0xFFB58CFF, false);
+            if (!scan.isDone()) { g.text(font, "Scanning resource packs...", L, T + 4, 0xFFAAAAAA, false); return; }
             finishScan();
         }
         leftScroll = Math.max(0, Math.min(maxLeft(), leftScroll));
         scroll = Math.max(0, Math.min(maxCenter(), scroll));
 
-        // ----- left list: every block/item you have a texture for -----
+        // ----- left: the short fixed list -----
         int hoverRow = rowAt(mx, my);
-        for (int i = 0; i < listed.size(); i++) {
+        for (int i = 0; i < data.size(); i++) {
             int y = T + i * ROW - (int) leftScroll;
             if (y + ROW < T || y > bottom()) continue;
-            Entry e = listed.get(i);
-            boolean active = e == cur;
+            CatData c = data.get(i);
+            boolean active = c == cur;
             if (active) g.fill(L, y, L + LEFT_W, y + ROW - 2, 0x883A2A66);
             else if (i == hoverRow) g.fill(L, y, L + LEFT_W, y + ROW - 2, 0x44302850);
-            variant(g, e, previewPack(e), L + 12, y + 10, 18);
-            g.text(font, fit(e.label, LEFT_W - 52), L + 26, y + 6, active ? 0xFFFFFFFF : 0xFFBBBBBB, false);
-            String n = String.valueOf(e.packs().size());
-            g.text(font, n, L + LEFT_W - 6 - font.width(n), y + 6, selPack.containsKey(e.key) ? 0xFF55FF55 : 0xFFB58CFF, false);
+            style(g, c, previewPack(c), L + 13, y + 11, 18, true);
+            g.text(font, c.def.name(), L + 28, y + 7, active ? 0xFFFFFFFF : 0xFFBBBBBB, false);
+            String n = String.valueOf(c.packs().size());
+            g.text(font, n, L + LEFT_W - 6 - font.width(n), y + 7, selPack.containsKey(c.def.name()) ? 0xFF55FF55 : 0xFFB58CFF, false);
         }
 
-        // ----- centre: the styles (packs) for the chosen entry -----
+        // ----- middle: the styles for the chosen entry -----
         int hoverCell = cellAt(mx, my);
         if (cur != null) {
             int cols = cols();
@@ -350,66 +357,60 @@ public class MixScreen extends Screen {
                 int yy = T + (idx / cols) * (CELL + LABEL + GAP) - (int) scroll;
                 if (yy + CELL + LABEL < T || yy > bottom()) continue;
                 String pack = packs.get(idx);
-                boolean active = pack.equals(selPack.get(cur.key));
+                boolean active = pack.equals(selPack.get(cur.def.name()));
                 g.fill(x, yy, x + CELL, yy + CELL, 0xFF1A1730);
-                variant(g, cur, pack, x + CELL / 2, yy + CELL / 2, CELL - 12);
+                style(g, cur, pack, x + CELL / 2, yy + CELL / 2, CELL - 14, false);
                 border(g, x, yy, CELL, CELL, active ? 0xFF55FF55 : (idx == hoverCell ? 0xFFB58CFF : 0xFF2E2950));
                 String lab = pack.endsWith(".zip") ? pack.substring(0, pack.length() - 4) : pack;
                 g.text(font, fit(lab, CELL), x, yy + CELL + 3, active ? 0xFF55FF55 : 0xFFDDDDDD, false);
             }
         }
 
-        // ----- right: inspector -----
+        // ----- right: overview thumbnails first (the preview block below hides anything scrolled above it) -----
         int rx = width - L - RIGHT_W;
-        g.fill(rx, T, rx + RIGHT_W, T + RIGHT_W, 0xFF1A1730);
+        String shown = null;
+        List<Source> ov = List.of();
         if (cur != null) {
-            String shown = hoverCell >= 0 ? cur.packs().get(hoverCell)
-                    : (inspectPack != null ? inspectPack : previewPack(cur));
-            variant(g, cur, shown, rx + RIGHT_W / 2, T + RIGHT_W / 2, RIGHT_W - 24);
-            boolean act = shown.equals(selPack.get(cur.key));
+            shown = hoverCell >= 0 ? cur.packs().get(hoverCell) : (inspectPack != null ? inspectPack : previewPack(cur));
+            ov = cur.overview(shown);
+            ovScroll = Math.max(0, Math.min(maxOv(ov.size()), ovScroll));
+            int per = perRow();
+            for (int i = 0; i < ov.size(); i++) {
+                int x = rx + (i % per) * (TH + TG);
+                int y = ovTop() + (i / per) * (TH + TG) - (int) ovScroll;
+                if (y + TH < ovTop() - 2 || y > bottom()) continue;
+                g.fill(x, y, x + TH, y + TH, 0xFF1A1730);
+                flatImg(g, img(ov.get(i)), x + TH / 2, y + TH / 2, TH - 4);
+            }
+        }
+        int hoverOv = ovAt(mx, my, ov.size());
+
+        g.fill(rx, T, rx + RIGHT_W, ovTop(), BG);
+        g.fill(rx, T, rx + RIGHT_W, T + PREVIEW, 0xFF1A1730);
+        if (cur != null && shown != null) {
+            style(g, cur, shown, rx + RIGHT_W / 2, T + PREVIEW / 2, PREVIEW - 16, false);
+            boolean act = shown.equals(selPack.get(cur.def.name()));
             String lab = shown.endsWith(".zip") ? shown.substring(0, shown.length() - 4) : shown;
-            g.text(font, fit(cur.label, RIGHT_W), rx, T + RIGHT_W + 6, 0xFFFFFFFF, false);
-            g.text(font, fit(lab, RIGHT_W), rx, T + RIGHT_W + 18, 0xFFB58CFF, false);
-            g.text(font, act ? "SELECTED" : "not selected", rx, T + RIGHT_W + 30, act ? 0xFF55FF55 : 0xFF777777, false);
+            g.text(font, fit(cur.def.name() + " - " + lab, RIGHT_W), rx, T + PREVIEW + 6, 0xFFFFFFFF, false);
+            g.text(font, act ? "SELECTED" : "not selected", rx, T + PREVIEW + 18, act ? 0xFF55FF55 : 0xFF777777, false);
+            String ovLabel = hoverOv >= 0 ? ov.get(hoverOv).tex().replace(".png", "") : "OVERVIEW (" + ov.size() + ")";
+            g.text(font, fit(ovLabel, RIGHT_W), rx, ovTop() - 12, hoverOv >= 0 ? 0xFFFFFFFF : 0xFFB58CFF, false);
         }
 
-        // ----- cover anything that scrolled out of the list areas, then draw header and footer on top -----
+        // ----- hide what scrolled out at the top/bottom, then header and footer -----
         g.fill(0, 0, width, T, BG);
         g.fill(0, bottom(), width, height, BG);
-
-        g.text(font, "TEXTUREPACK CLIENT", L, 6, 0xFFB58CFF, false);
-        int tx = L;
-        for (int i = 0; i < TABS.length; i++) {
-            int w = font.width(TABS[i]) + 14;
-            boolean a = i == tab;
-            g.fill(tx, 20, tx + w, 36, a ? 0xFF4A3A8A : (in(mx, my, tx, 20, w, 16) ? 0xFF2E2950 : 0xFF1A1730));
-            g.text(font, TABS[i], tx + 7, 24, a ? 0xFFFFFFFF : 0xFFAAAAAA, false);
-            tx += w + 4;
-        }
-        String mode = flat ? "FLAT" : "3D";
-        g.fill(width - L - 50, 20, width - L, 36, in(mx, my, width - L - 50, 20, 50, 16) ? 0xFF4A3A8A : 0xFF2E2950);
-        g.text(font, mode, width - L - 50 + (50 - font.width(mode)) / 2, 24, 0xFFFFFFFF, false);
-
-        // search box (filters the left list)
-        g.fill(L, 40, L + LEFT_W, 56, 0xFF1A1730);
-        border(g, L, 40, LEFT_W, 16, 0xFF2E2950);
-        boolean blink = (System.currentTimeMillis() / 500) % 2 == 0;
-        g.text(font, query.isEmpty() ? "Search block / item..." : query + (blink ? "_" : ""), L + 5, 44,
-                query.isEmpty() ? 0xFF666666 : 0xFFFFFFFF, false);
-
-        // centre title
+        g.text(font, "TEXTUREPACK CLIENT", L, 10, 0xFFB58CFF, false);
         if (cur != null)
-            g.text(font, cur.label + "  -  " + cur.packs().size() + (cur.packs().size() == 1 ? " style" : " styles"),
-                    cx0(), 44, 0xFFFFFFFF, false);
+            g.text(font, cur.def.name() + "  -  " + cur.packs().size() + (cur.packs().size() == 1 ? " style" : " styles"),
+                    cx0(), 10, 0xFFFFFFFF, false);
         else
-            g.text(font, "No textures found for this tab. Put packs in .minecraft/resourcepacks", cx0(), 44, 0xFF777777, false);
+            g.text(font, "No matching textures found. Put packs in .minecraft/resourcepacks", cx0(), 10, 0xFF777777, false);
 
-        // bottom bar
         int by = height - 30;
         button(g, L, by, 80, applying ? "..." : "APPLY", mx, my, dirty ? 0xFF3C8D3C : 0xFF2E2950);
         button(g, L + 88, by, 80, "RESET", mx, my, 0xFF2E2950);
-        g.text(font, status.isEmpty() ? "CLICK A STYLE TO SELECT / APPLY TO USE / RIGHT SHIFT CLOSE" : status,
-                L + 180, by + 5, 0xFF999999, false);
+        g.text(font, status.isEmpty() ? "CLICK A STYLE, THEN APPLY / RIGHT SHIFT CLOSES" : status, L + 180, by + 5, 0xFF999999, false);
         String cnt = selPack.size() + " selected";
         g.text(font, cnt, width - L - font.width(cnt), by + 5, 0xFF999999, false);
     }
@@ -436,21 +437,15 @@ public class MixScreen extends Screen {
             selPack.clear(); dirty = true; status = "Cleared - press APPLY.";
             return true;
         }
-        if (in(mx, my, width - L - 50, 20, 50, 16)) { flat = !flat; return true; }
-        int tx = L;
-        for (int i = 0; i < TABS.length; i++) {
-            int w = font.width(TABS[i]) + 14;
-            if (in(mx, my, tx, 20, w, 16)) { tab = i; rebuildList(); return true; }
-            tx += w + 4;
-        }
         int row = rowAt(mx, my);
-        if (row >= 0) { cur = listed.get(row); inspectPack = null; scroll = 0; return true; }
+        if (row >= 0) { cur = data.get(row); inspectPack = null; scroll = 0; ovScroll = 0; return true; }
         int cell = cellAt(mx, my);
         if (cell >= 0 && cur != null) {
             String pack = cur.packs().get(cell);
             inspectPack = pack;
+            ovScroll = 0;
             if (button == 0) {
-                if (pack.equals(selPack.get(cur.key))) selPack.remove(cur.key); else selPack.put(cur.key, pack);
+                if (pack.equals(selPack.get(cur.def.name()))) selPack.remove(cur.def.name()); else selPack.put(cur.def.name(), pack);
                 dirty = true;
                 status = "Pending changes - press APPLY.";
             }
@@ -462,6 +457,7 @@ public class MixScreen extends Screen {
     @Override
     public boolean mouseScrolled(double x, double y, double horizontal, double vertical) {
         if (x < cx0() - 5) leftScroll = Math.max(0, Math.min(maxLeft(), leftScroll - vertical * ROW * 2));
+        else if (x > cx1() + 5) ovScroll = Math.max(0, ovScroll - vertical * (TH + TG) * 2); // upper limit is clamped while drawing
         else scroll = Math.max(0, Math.min(maxCenter(), scroll - vertical * 30));
         return true;
     }
@@ -471,10 +467,9 @@ public class MixScreen extends Screen {
         applying = true;
         status = "Applying...";
         Map<String, Source> snap = new HashMap<>();
-        for (var e : selPack.entrySet()) {
-            Entry en = entries.get(e.getKey());
-            if (en != null) snap.putAll(en.faces(e.getValue()));
-        }
+        for (var e : selPack.entrySet())
+            for (CatData cd : data)
+                if (cd.def.name().equals(e.getKey())) snap.putAll(cd.faces(e.getValue()));
         CompletableFuture.supplyAsync(() -> {
             try { return MixBuilder.write(snap); } catch (Exception e) { throw new RuntimeException(e); }
         }).whenComplete((failed, err) -> mc.execute(() -> {
