@@ -3,14 +3,13 @@ package dev.tpc;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
-import java.util.function.Predicate;
 import java.util.zip.ZipFile;
 
 /** Finds every texture in every pack inside the resourcepacks folder. */
 public final class PackScanner {
     public static final String ROOT = "assets/minecraft/textures/";
     static final List<String> DIRS = List.of("block/", "item/", "gui/", "environment/", "particle/",
-            "entity/end_crystal/", "entity/shield");
+            "entity/end_crystal/", "entity/equipment/", "entity/trident", "entity/elytra", "models/armor/");
 
     public record Source(String pack, String tex, Path file, boolean zip) {
         public byte[] read() throws IOException { return readEntry(ROOT + tex, true); }
@@ -34,32 +33,7 @@ public final class PackScanner {
         }
 
         public String packLabel() { return pack.endsWith(".zip") ? pack.substring(0, pack.length() - 4) : pack; }
-
-        public String texLabel() {
-            String n = tex.substring(tex.lastIndexOf('/') + 1);
-            return n.substring(0, n.length() - 4);
-        }
     }
-
-    public record Category(String name, Predicate<String> match) {}
-
-    public static final List<Category> CATEGORIES = List.of(
-            new Category("All", t -> true),
-            new Category("Crystal", t -> t.contains("crystal")),
-            new Category("Obsidian", t -> t.contains("obsidian")),
-            new Category("Armor", t -> t.contains("helmet") || t.contains("chestplate") || t.contains("leggings") || t.contains("boots")),
-            new Category("Tools", t -> t.contains("sword") || t.contains("pickaxe") || t.contains("_axe") || t.contains("shovel") || t.contains("hoe") || t.contains("mace") || t.contains("trident")),
-            new Category("Gaps & Pearls", t -> t.contains("golden_apple") || t.contains("ender_pearl")),
-            new Category("Totem", t -> t.contains("totem")),
-            new Category("HUD", t -> t.startsWith("gui/")),
-            new Category("Fire", t -> t.contains("fire") || t.contains("flame")),
-            new Category("Sky", t -> t.startsWith("environment/")),
-            new Category("Stone", t -> t.contains("stone") || t.contains("deepslate")),
-            new Category("Grass", t -> t.contains("grass") || t.contains("dirt")),
-            new Category("Shield", t -> t.contains("shield")),
-            new Category("Cobwebs", t -> t.contains("cobweb")),
-            new Category("Blocks", t -> t.startsWith("block/")),
-            new Category("Items", t -> t.startsWith("item/")));
 
     public static Map<String, List<Source>> scan(Path dir) {
         Map<String, List<Source>> out = new TreeMap<>();
